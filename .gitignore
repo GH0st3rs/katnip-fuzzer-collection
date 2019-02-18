@@ -1,0 +1,5 @@
+reports
+sessions
+kittylogs
+*.log
+__pycache__
