@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import socket
+import os
 from xml.dom import minidom
 import time
 import signal
@@ -9,14 +10,15 @@ from argparse import ArgumentParser
 from kitty.fuzzers import ServerFuzzer
 from kitty.interfaces import WebInterface
 from kitty.model import GraphModel
-from kitty.model.low_level import Container, Static, String
+from kitty.model.low_level import Container, Static, String, Template
 
 from katnip.targets.tcp import TcpTarget
 from katnip.monitors.gdbserver import GdbServerMonitor
 from katnip.legos.http import TextField, IntField, HttpRequestLine
+from katnip.legos.xml import XmlAttribute, XmlElement
 from katnip.legos.url import urlparse
 
-from legos_xml import XmlNode, xmlTextAttribute, xmlAttribute
+# from legos_xml import XmlNode, xmlTextAttribute, xmlAttribute
 from telnet import restart_gdbserver
 
 
@@ -91,44 +93,73 @@ class SCPD():
         return self.get_actions(xmldoc)
 
 
+# def createPayload(service, function, arguments):
+#     # container for created nodes
+#     action_param_nodes = []
+#     for k in filter(lambda x: x.get('direction') != 'out', arguments):
+#         action_param_nodes.append(XmlNode(tag=k['name'], value='Value'))
+#     # create the Function element and set its attribute
+#     fn = XmlNode(
+#         tag='u:%s' % function,
+#         value=action_param_nodes,
+#         attributes=[
+#             xmlAttribute('xmlns:u', [
+#                 Static('urn:schemas-upnp-org:service:'), String(service), Static(':1')
+#             ])
+#         ],
+#     )
+#     # create the Body element
+#     body = XmlNode(tag='s:Body', value=fn)
+#     # create the Envelope element and set its attributes
+#     envelope = XmlNode(
+#         tag='s:Envelope',
+#         value=body,
+#         attributes=[
+#             xmlTextAttribute('xmlns:s', 'http://schemas.xmlsoap.org/soap/envelope/'),
+#             xmlTextAttribute('s:encodingStyle', 'http://schemas.xmlsoap.org/soap/encoding/'),
+#         ],
+#     )
+#     # Create UPNP body
+#     return Container(name='upnp_body', fields=[envelope])
+
+
 def createPayload(service, function, arguments):
     # container for created nodes
     action_param_nodes = []
     for k in filter(lambda x: x.get('direction') != 'out', arguments):
-        action_param_nodes.append(XmlNode(tag=k['name'], value='Value'))
+        action_param_nodes.append(XmlElement(name=k['name'], element_name=k['name'], content='Value'))
+    # function attribute
+    u = [Static('urn:schemas-upnp-org:service:'), String(service), Static(':1')]
     # create the Function element and set its attribute
-    fn = XmlNode(
-        tag='u:%s' % function,
-        value=action_param_nodes,
-        attributes=[
-            xmlAttribute('xmlns:u', [
-                Static('urn:schemas-upnp-org:service:'), String(service), Static(':1')
-            ])
-        ],
-    )
+    function_element = [XmlElement(
+        name=function,
+        element_name='u:%s' % function,
+        attributes=[XmlAttribute(name='attr_u', attribute='xmlns:u', value=u)],
+        content=action_param_nodes
+    )]
     # create the Body element
-    body = XmlNode(tag='s:Body', value=fn)
+    body = [XmlElement(name='Body', element_name='s:Body', content=function_element)]
     # create the Envelope element and set its attributes
-    envelope = XmlNode(
-        tag='s:Envelope',
-        value=body,
+    envelope = XmlElement(
+        name='Envelope',
+        element_name='s:Envelope',
+        content=body,
         attributes=[
-            xmlTextAttribute('xmlns:s', 'http://schemas.xmlsoap.org/soap/envelope/'),
-            xmlTextAttribute('s:encodingStyle', 'http://schemas.xmlsoap.org/soap/encoding/'),
+            XmlAttribute(name='attr_s', attribute='xmlns:s', value='http://schemas.xmlsoap.org/soap/envelope/'),
+            XmlAttribute(name='attr_encodingStyle', attribute='s:encodingStyle', value='http://schemas.xmlsoap.org/soap/encoding/'),
         ],
     )
-    # Create UPNP body
-    return Container(name='upnp body', fields=[envelope])
+    return Template(envelope, name='upnp_body')
 
 
 def createHeaders(url, host, action):
-    data = Container(name='http header', fields=[
-        HttpRequestLine(['GET', 'POST'], url),
+    data = Container(name='http_header', fields=[
+        HttpRequestLine(['POST'], url),
         TextField('Host', host),
         TextField('User-Agent', 'python-requests/2.21.0'),
         TextField('Content-Type', 'text/xml'),
         TextField('SOAPAction', action),
-        IntField('Content-Length', 100, end=True)
+        IntField('Content-Length', 5000, end=True)
     ])
     return data
 
@@ -159,6 +190,12 @@ def fuzzing(host, port, template):
     fuzzer.stop()
 
 
+def reinit():
+    os.system('rm -rf sessions reports kittylogs *.log')
+    os.mkdir('sessions')
+    os.mkdir('reports')
+
+
 def main():
     args = parse_args()
     location_url = send_ssdp(args.target_ip)
@@ -167,6 +204,7 @@ def main():
     else:
         logger('Router not found')
         exit(-1)
+    reinit()
     print('Router found: %s' % location_url)
     parsed_url = urlparse(location_url)
     host, port = parsed_url.netloc.split(':')
@@ -176,6 +214,7 @@ def main():
         restart_gdbserver(host)
         logger('Start fuzzing: %s' % name)
         fuzzing(host, port, template)
+        return None
 
 
 def generate_fuzz_templates(parsed_url, upnp):
@@ -186,7 +225,7 @@ def generate_fuzz_templates(parsed_url, upnp):
             upnp_payload = createPayload(service, function, arguments)
             headers = createHeaders(upnp_srv['controlURL'], parsed_url.netloc, upnp_srv['serviceType'])
             test_string = '{} {} {} {} {} {}'.format(service, function, arguments, upnp_srv['controlURL'], parsed_url.netloc, upnp_srv['serviceType'])
-            template = Container(name='upnp', fields=[headers, upnp_payload])
+            template = Container(name='upnp_request', fields=[headers, upnp_payload])
             yield (test_string, template)
 
 

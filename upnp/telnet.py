@@ -2,6 +2,7 @@
 from telnetlib import Telnet
 import socket
 import time
+import sys
 
 
 class TelnetController(object):
@@ -41,7 +42,8 @@ class TelnetController(object):
         self.telnet = Telnet(self.target, timeout=1)
 
 
-def restart_gdbserver(target_ip):
+def restart_gdbserver(target_ip, process_name='upnp', callback=None):
+    pid_command = "ps|grep %s|grep -v grep|awk '{print $1}'"
     print('Try connect to telnet')
     controller = TelnetController(target_ip, login='!!Huawei', password='@HuaweiHgw')
     time.sleep(1)
@@ -54,23 +56,21 @@ def restart_gdbserver(target_ip):
         print('gdbserver not found')
         exit(-1)
     print('Check previous gdbserver')
-    gdbserver_pid = controller.send_command("ps|grep gdbserver|grep -v grep|awk '{print $1}'")
+    gdbserver_pid = controller.send_command(pid_command % 'gdbserver')
     if gdbserver_pid:
         controller.send_command('kill -9 %s' % gdbserver_pid[0])
     gdbserver_pid = ''
     while not gdbserver_pid:
-        print('Find upnp')
-        pid = controller.send_command("ps|grep upnp|grep -v grep|awk '{print $1}'")
+        print('Find %s' % process_name)
+        pid = controller.send_command(pid_command % process_name)
         print('Run gdbserver')
         if not pid:
-            print('Upnp not found! Try restart upnp server')
-            upnp_sock = controller.upnp_connect()
-            controller.send_command("./gdbserver_mips_old :2222 --attach $(ps|grep upnp|grep -v grep|awk '{print $1}') &")
-            upnp_sock.close()
-        else:
-            controller.send_command("./gdbserver_mips_old :2222 --attach %s &" % pid[0])
-        gdbserver_pid = controller.send_command("ps|grep gdbserver|grep -v grep|awk '{print $1}'")
+            print('%s not found! Try restart' % process_name)
+            callback()
+        controller.send_command("./gdbserver_mips_old :2222 --attach $(%s) &" % (pid_command % process_name))
+        gdbserver_pid = controller.send_command(pid_command % 'gdbserver')
 
 
 if __name__ == '__main__':
-    restart_gdbserver()
+    if len(sys.argv) >= 3:
+        restart_gdbserver(sys.argv[1], sys.argv[2])
